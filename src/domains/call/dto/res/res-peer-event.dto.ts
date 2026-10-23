@@ -5,7 +5,11 @@ export class ResPeerEventDto {
   roomCode: string;
   peerId: string;
 
-  static from(room: CallRoom, peerId: string): ResPeerEventDto {
+  /** room: 방 Entity 또는 roomCode를 가진 응답(ResRoomJoinedDto) */
+  static from(
+    room: Pick<CallRoom, 'roomCode'>,
+    peerId: string,
+  ): ResPeerEventDto {
     const dto = new ResPeerEventDto();
     dto.roomCode = room.roomCode;
     dto.peerId = peerId;

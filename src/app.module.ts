@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { buildTypeOrmOptions } from './database/typeorm.config';
+import { CallModule } from './domains/call/call.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { buildTypeOrmOptions } from './database/typeorm.config';
       inject: [ConfigService],
       useFactory: buildTypeOrmOptions,
     }),
+    CallModule,
   ],
   controllers: [AppController],
   providers: [AppService],

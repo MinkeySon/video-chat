@@ -2,6 +2,7 @@ export enum CallErrorCode {
   ROOM_FULL = 'ROOM_FULL',
   NOT_IN_ROOM = 'NOT_IN_ROOM',
   PEER_NOT_FOUND = 'PEER_NOT_FOUND',
+  INVALID_PAYLOAD = 'INVALID_PAYLOAD',
 }
 
 /** 통화 도메인 예외. 전송 계층(WS/HTTP)과 무관하며 게이트웨이에서 변환한다. */
