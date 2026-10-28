@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d10" />
+  <title>1:1 화상통화 테스트</title>
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --panel: #16191e;
+      --text: #f2f4f7;
+      --muted: #9aa3ae;
+      --accent: #3b82f6;
+      --danger: #ef4444;
+      --ok: #22c55e;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body { overflow: hidden; }
+
+    /* 입장 화면 */
+    #lobby {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; padding: 24px;
+    }
+    #lobby h1 { margin: 0 0 8px; font-size: 22px; }
+    #lobby p { margin: 0; color: var(--muted); font-size: 14px; text-align: center; }
+    #lobby form { display: flex; gap: 8px; width: min(420px, 100%); }
+    #room-code {
+      flex: 1; min-width: 0;
+      padding: 14px 16px; font-size: 16px; /* 16px 미만이면 iOS가 확대한다 */
+      border: 1px solid #2a2f37; border-radius: 12px;
+      background: var(--panel); color: var(--text);
+    }
+    .primary {
+      padding: 14px 20px; font-size: 16px; font-weight: 600;
+      border: 0; border-radius: 12px; background: var(--accent); color: #fff;
+    }
+    .primary:disabled { opacity: .5; }
+
+    /* 통화 화면: 기본(세로) = 상대 전체 + 내 화면 PiP */
+    #call { position: fixed; inset: 0; display: none; }
+    #call.on { display: block; }
+    #stage { position: absolute; inset: 0; }
+    video { background: #000; object-fit: cover; }
+    #remote { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #local {
+      position: absolute;
+      top: calc(12px + var(--safe-top)); right: 12px;
+      width: 28vw; max-width: 180px; aspect-ratio: 3 / 4;
+      border-radius: 12px; border: 2px solid rgba(255, 255, 255, .25);
+      z-index: 2;
+    }
+    #local.mirror { transform: scaleX(-1); }
+    #waiting {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 15px; text-align: center; padding: 24px;
+    }
+
+    /* 태블릿 가로: 좌우 분할 */
+    @media (min-width: 768px) and (orientation: landscape) {
+      #stage { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 8px 96px; }
+      #remote, #local {
+        position: static; width: 100%; height: 100%;
+        max-width: none; aspect-ratio: auto; border-radius: 16px; border: 0;
+      }
+      #waiting { right: 50%; bottom: 96px; }
+    }
+
+    #status {
+      position: absolute; top: calc(12px + var(--safe-top)); left: 12px; z-index: 3;
+      padding: 6px 10px; border-radius: 999px;
+      background: rgba(0, 0, 0, .55); font-size: 12px;
+    }
+    #status::before {
+      content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px;
+      border-radius: 50%; background: var(--muted); vertical-align: middle;
+    }
+    #status[data-state='connected']::before { background: var(--ok); }
+    #status[data-state='failed']::before { background: var(--danger); }
+
+    #controls {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+      display: flex; justify-content: center; gap: 16px;
+      padding: 16px 16px calc(16px + var(--safe-bottom));
+      background: linear-gradient(transparent, rgba(0, 0, 0, .6));
+    }
+    #controls button {
+      width: 56px; height: 56px; border-radius: 50%; border: 0;
+      background: rgba(255, 255, 255, .16); color: #fff; font-size: 13px; font-weight: 600;
+    }
+    #controls button[aria-pressed='true'] { background: #fff; color: #111; }
+    #controls #btn-leave { background: var(--danger); }
+
+    #tap-to-play {
+      position: absolute; inset: 0; z-index: 4; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, .6); font-size: 16px;
+    }
+    #tap-to-play.on { display: flex; }
+
+    #toast {
+      position: fixed; left: 50%; bottom: calc(100px + var(--safe-bottom)); z-index: 10;
+      transform: translateX(-50%);
+      max-width: calc(100% - 32px); padding: 10px 14px; border-radius: 10px;
+      background: #222831; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none;
+    }
+    #toast.on { opacity: 1; }
+  </style>
+</head>
+<body>
+  <section id="lobby">
+    <h1>1:1 화상통화 테스트</h1>
+    <p>두 기기에서 같은 방 코드로 입장하세요.<br />휴대폰은 HTTPS 주소로 접속해야 카메라를 쓸 수 있습니다.</p>
+    <form id="join-form">
+      <input id="room-code" name="roomCode" placeholder="방 코드 (영문·숫자·_·-)" autocomplete="off"
+             autocapitalize="off" maxlength="64" pattern="[A-Za-z0-9_\-]+" required />
+      <button id="btn-join" class="primary" type="submit">입장</button>
+    </form>
+  </section>
+
+  <section id="call">
+    <div id="stage">
+      <!-- iOS Safari: playsinline 없으면 전체화면 강제, 내 화면은 muted여야 자동재생 -->
+      <video id="remote" playsinline autoplay></video>
+      <video id="local" class="mirror" playsinline autoplay muted></video>
+      <div id="waiting">상대를 기다리는 중…<br />같은 방 코드로 다른 기기에서 입장하세요.</div>
+    </div>
+    <div id="status" data-state="idle">대기</div>
+    <div id="controls">
+      <button id="btn-mic" type="button" aria-pressed="false">마이크</button>
+      <button id="btn-cam" type="button" aria-pressed="false">카메라</button>
+      <button id="btn-flip" type="button">전환</button>
+      <button id="btn-leave" type="button">나가기</button>
+    </div>
+    <div id="tap-to-play">화면을 눌러 상대 소리 재생</div>
+  </section>
+
+  <div id="toast" role="status"></div>
+
+  <!-- socket.io 서버가 제공하는 클라이언트 스크립트 (CDN 불필요) -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    'use strict';
+
+    // 서버 이벤트 규약 (src/domains/call/call.constants.ts 와 동일)
+    const EVENTS = {
+      JOIN: 'room:join', JOINED: 'room:joined', LEAVE: 'room:leave',
+      PEER_JOINED: 'room:peer-joined', PEER_LEFT: 'room:peer-left',
+      OFFER: 'signal:offer', ANSWER: 'signal:answer', ICE: 'signal:ice',
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const ui = {
+      lobby: $('lobby'), call: $('call'), form: $('join-form'), roomCode: $('room-code'), join: $('btn-join'),
+      remote: $('remote'), local: $('local'), waiting: $('waiting'), status: $('status'),
+      mic: $('btn-mic'), cam: $('btn-cam'), flip: $('btn-flip'), leave: $('btn-leave'),
+      tapToPlay: $('tap-to-play'), toast: $('toast'),
+    };
+
+    /** 화면 표시만 담당 */
+    const view = {
+      toast(message) {
+        ui.toast.textContent = message;
+        ui.toast.classList.add('on');
+        clearTimeout(view.toastTimer);
+        view.toastTimer = setTimeout(() => ui.toast.classList.remove('on'), 2500);
+      },
+      status(state, label) {
+        ui.status.dataset.state = state;
+        ui.status.textContent = label;
+      },
+      showCall(on) {
+        ui.lobby.style.display = on ? 'none' : '';
+        ui.call.classList.toggle('on', on);
+      },
+      // ontrack은 audio·video 트랙마다 호출되므로 같은 스트림이면 다시 넣지 않는다 (play() 중단 방지).
+      showRemote(stream) {
+        ui.waiting.style.display = stream ? 'none' : '';
+        if (!stream) ui.tapToPlay.classList.remove('on');
+        if (ui.remote.srcObject === stream) return;
+        ui.remote.srcObject = stream;
+        if (!stream) return;
+        ui.remote.play().catch((e) => {
+          // 자동재생 차단(주로 iOS)일 때만 탭 안내
+          if (e.name === 'NotAllowedError') ui.tapToPlay.classList.add('on');
+        });
+      },
+    };
+
+    /** 1:1 통화 상태 (소켓 + RTCPeerConnection + 내 미디어) */
+    const call = {
+      socket: null,
+      roomCode: null,
+      iceServers: [],
+      pc: null,
+      localStream: null,
+      pendingCandidates: [],
+      facingMode: 'user',
+      wakeLock: null,
+
+      async start(roomCode) {
+        this.roomCode = roomCode;
+        this.iceServers = await fetch('/call/ice-servers').then((r) => r.json()).then((b) => b.iceServers);
+        this.localStream = await this.getMedia(this.facingMode, true);
+        ui.local.srcObject = this.localStream;
+        view.showCall(true);
+        view.status('idle', '입장 중');
+        this.keepScreenOn();
+        this.connectSocket();
+      },
+
+      getMedia(facingMode, withAudio) {
+        return navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: withAudio ? { echoCancellation: true, noiseSuppression: true } : false,
+        });
+      },
+
+      connectSocket() {
+        const socket = io({ transports: ['websocket'] });
+        this.socket = socket;
+
+        socket.on('connect', () => socket.emit(EVENTS.JOIN, { roomCode: this.roomCode }));
+        socket.on(EVENTS.JOINED, ({ peerCount }) => {
+          view.status('idle', peerCount === 1 ? '상대 대기' : '연결 중');
+        });
+        // 나중에 들어온 쪽을 먼저 있던 쪽이 offer로 부른다.
+        socket.on(EVENTS.PEER_JOINED, () => this.makeOffer());
+        socket.on(EVENTS.OFFER, ({ sdp }) => this.acceptOffer(sdp));
+        socket.on(EVENTS.ANSWER, ({ sdp }) => this.pc && this.pc.setRemoteDescription(sdp).then(() => this.flushCandidates()));
+        socket.on(EVENTS.ICE, ({ candidate }) => this.addCandidate(candidate));
+        socket.on(EVENTS.PEER_LEFT, () => {
+          view.toast('상대가 나갔습니다.');
+          this.closePeer();
+          view.status('idle', '상대 대기');
+        });
+        socket.on('exception', (error) => {
+          const message = Array.isArray(error.message) ? error.message.join('\n') : error.message;
+          view.toast(message || '오류가 발생했습니다.');
+          if (error.code === 'ROOM_FULL') this.stop();
+        });
+        socket.on('disconnect', () => view.status('failed', '서버 연결 끊김'));
+      },
+
+      createPeer() {
+        this.closePeer();
+        const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+        this.localStream.getTracks().forEach((track) => pc.addTrack(track, this.localStream));
+
+        pc.onicecandidate = ({ candidate }) => {
+          if (candidate) this.socket.emit(EVENTS.ICE, { roomCode: this.roomCode, candidate: candidate.toJSON() });
+        };
+        pc.ontrack = ({ streams }) => view.showRemote(streams[0]);
+        pc.onconnectionstatechange = () => {
+          const labels = { connecting: '연결 중', connected: '통화 중', disconnected: '연결 불안정', failed: '연결 실패', closed: '종료' };
+          view.status(pc.connectionState, labels[pc.connectionState] || pc.connectionState);
+          if (pc.connectionState === 'failed') view.toast('P2P 연결 실패 — 모바일 데이터라면 TURN 서버가 필요할 수 있습니다.');
+        };
+        this.pc = pc;
+        return pc;
+      },
+
+      async makeOffer() {
+        const pc = this.createPeer();
+        await pc.setLocalDescription(await pc.createOffer());
+        this.socket.emit(EVENTS.OFFER, { roomCode: this.roomCode, sdp: pc.localDescription.toJSON() });
+      },
+
+      async acceptOffer(sdp) {
+        const pc = this.createPeer();
+        await pc.setRemoteDescription(sdp);
+        await this.flushCandidates();
+        await pc.setLocalDescription(await pc.createAnswer());
+        this.socket.emit(EVENTS.ANSWER, { roomCode: this.roomCode, sdp: pc.localDescription.toJSON() });
+      },
+
+      // remoteDescription 전에 도착한 candidate는 모아 두었다가 넣는다.
+      async addCandidate(candidate) {
+        if (!this.pc || !this.pc.remoteDescription) {
+          this.pendingCandidates.push(candidate);
+          return;
+        }
+        await this.pc.addIceCandidate(candidate).catch((e) => console.warn('ICE 추가 실패', e));
+      },
+
+      async flushCandidates() {
+        const queued = this.pendingCandidates.splice(0);
+        for (const candidate of queued) await this.addCandidate(candidate);
+      },
+
+      closePeer() {
+        if (this.pc) {
+          this.pc.ontrack = this.pc.onicecandidate = this.pc.onconnectionstatechange = null;
+          this.pc.close();
+        }
+        this.pc = null;
+        this.pendingCandidates = [];
+        view.showRemote(null);
+      },
+
+      toggleTrack(kind) {
+        const track = this.localStream && this.localStream.getTracks().find((t) => t.kind === kind);
+        if (!track) return false;
+        track.enabled = !track.enabled;
+        return !track.enabled; // true = 꺼짐
+      },
+
+      // 전면 ↔ 후면 카메라. 연결을 끊지 않고 송신 트랙만 교체한다.
+      async flipCamera() {
+        const next = this.facingMode === 'user' ? 'environment' : 'user';
+        const newStream = await this.getMedia(next, false);
+        const newTrack = newStream.getVideoTracks()[0];
+        const oldTrack = this.localStream.getVideoTracks()[0];
+        newTrack.enabled = oldTrack ? oldTrack.enabled : true;
+
+        const sender = this.pc && this.pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) await sender.replaceTrack(newTrack);
+        if (oldTrack) {
+          this.localStream.removeTrack(oldTrack);
+          oldTrack.stop();
+        }
+        this.localStream.addTrack(newTrack);
+        this.facingMode = next;
+        ui.local.classList.toggle('mirror', next === 'user');
+      },
+
+      async keepScreenOn() {
+        try {
+          if ('wakeLock' in navigator) this.wakeLock = await navigator.wakeLock.request('screen');
+        } catch (e) { /* 지원 안 하거나 거부되면 무시 */ }
+      },
+
+      stop() {
+        if (this.socket) {
+          if (this.socket.connected) this.socket.emit(EVENTS.LEAVE, { roomCode: this.roomCode });
+          this.socket.disconnect();
+        }
+        this.closePeer();
+        if (this.localStream) this.localStream.getTracks().forEach((t) => t.stop());
+        if (this.wakeLock) this.wakeLock.release().catch(() => {});
+        Object.assign(this, { socket: null, localStream: null, wakeLock: null, facingMode: 'user' });
+        ui.local.srcObject = null;
+        ui.local.classList.add('mirror');
+        ui.mic.setAttribute('aria-pressed', 'false');
+        ui.cam.setAttribute('aria-pressed', 'false');
+        view.showCall(false);
+        ui.join.disabled = false;
+      },
+    };
+
+    // 이벤트 연결
+    const params = new URLSearchParams(location.search);
+    if (params.get('room')) ui.roomCode.value = params.get('room');
+
+    ui.form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!window.isSecureContext) {
+        view.toast('HTTPS(또는 localhost)에서만 카메라를 쓸 수 있습니다.');
+        return;
+      }
+      ui.join.disabled = true;
+      try {
+        await call.start(ui.roomCode.value.trim());
+        history.replaceState(null, '', `?room=${encodeURIComponent(call.roomCode)}`);
+      } catch (e) {
+        view.toast(e.name === 'NotAllowedError' ? '카메라·마이크 권한을 허용해 주세요.' : `시작 실패: ${e.message}`);
+        call.stop();
+      }
+    });
+    ui.mic.addEventListener('click', () => ui.mic.setAttribute('aria-pressed', String(call.toggleTrack('audio'))));
+    ui.cam.addEventListener('click', () => ui.cam.setAttribute('aria-pressed', String(call.toggleTrack('video'))));
+    ui.flip.addEventListener('click', () => call.flipCamera().catch((e) => view.toast(`카메라 전환 실패: ${e.message}`)));
+    ui.leave.addEventListener('click', () => call.stop());
+    ui.tapToPlay.addEventListener('click', () => {
+      ui.tapToPlay.classList.remove('on');
+      ui.remote.play();
+    });
+    // 백그라운드에서 돌아오면 wake lock이 풀려 있으므로 다시 요청
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && call.localStream) call.keepScreenOn();
+    });
+    window.addEventListener('pagehide', () => call.socket && call.stop());
+
+    // 테스트 자동화용 상태 노출
+    window.__call = call;
+  </script>
+</body>
+</html>
