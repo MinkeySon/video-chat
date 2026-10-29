@@ -125,6 +125,36 @@ socket.io는 이 통로 위에 세 가지를 더해 줍니다. 이번 구현은 
 
 socket.io는 원래 HTTP 롱 폴링으로 먼저 연결한 뒤 WebSocket으로 올라갑니다. 이번 클라이언트는 `io({ transports: ['websocket'] })`로 처음부터 WebSocket만 쓰게 했습니다. 모바일 브라우저는 모두 WebSocket을 지원하고, 이렇게 하면 연결 단계가 하나 줄어듭니다.
 
+### 통로 위로 오가는 이벤트
+
+이 통로로 오가는 이벤트는 8개입니다. 이름 앞부분으로 역할을 나눴습니다. `room:*`은 **방 관리**, `signal:*`은 **WebRTC 연결 정보 전달**입니다. 방 이벤트가 오면 서버는 DB의 방 상태를 바꿉니다. 시그널 이벤트가 오면 서버는 내용을 들여다보지 않고 상대에게 넘기기만 합니다.
+
+방 이벤트부터 보겠습니다.
+
+| 이벤트 | 방향 | 서버가 하는 일 | 받은 쪽이 하는 일 |
+|---|---|---|---|
+| `room:join` | 클라이언트 → 서버 | 정원을 확인하고 참가 이력을 저장한 뒤, 소켓을 socket.io 방에 넣음 | (보내는 쪽) |
+| `room:joined` | 서버 → 본인 | `room:join`에 대한 응답. `{ roomId, roomCode, peerCount, isInitiator }` | 입장 완료 표시. 1명이면 상대를 기다림 |
+| `room:peer-joined` | 서버 → 방에 있던 상대 | 누군가 들어왔음을 기존 참가자에게 알림. `{ roomCode, peerId }` | **연결을 시작하라는 신호.** offer를 만들어 보냄 |
+| `room:leave` | 클라이언트 → 서버 | 퇴장 처리 후 방 상태를 WAITING이나 ENDED로 바꿈 | (보내는 쪽) |
+| `room:peer-left` | 서버 → 남은 상대 | 상대가 나갔음을 알림. `{ roomCode, peerId }` | WebRTC 연결을 정리하고 다시 기다림 |
+
+`room:joined`와 `room:peer-joined`를 나눈 이유는 받는 사람이 다르기 때문입니다. 새로 들어온 사람은 "입장됐다"는 것만 알면 되고, 먼저 있던 사람은 "상대가 왔으니 연결을 시작하라"는 신호가 필요합니다. 그래서 게이트웨이는 본인에게는 `room:joined`를 돌려주고, `client.to(roomCode)`로 본인을 뺀 나머지에게 `room:peer-joined`를 보냅니다.
+
+`room:peer-left`는 `room:leave`를 보냈을 때만 가는 게 아닙니다. 앱이 꺼지거나 네트워크가 끊겨도 socket.io의 연결 감시가 이를 알아채고, `handleDisconnect`가 같은 퇴장 처리를 한 뒤 남은 상대에게 보냅니다. 사용자가 "나가기"를 누르지 않고 사라져도 상대는 기다리는 상태로 돌아갈 수 있습니다.
+
+다음은 시그널 이벤트입니다. 세 이벤트 모두 서버 처리는 같습니다. 보낸 사람이 방에 들어와 있는지 확인하고, 같은 방 상대를 찾아서, 받은 내용에 보낸 사람(`fromId`)만 붙여 그대로 넘깁니다.
+
+| 이벤트 | 담는 것 | 보내는 쪽 | 받는 쪽이 하는 일 |
+|---|---|---|---|
+| `signal:offer` | SDP offer ("이 형식들로 하자") | 먼저 들어와 있던 쪽 | offer를 적용하고 answer를 만들어 회신 |
+| `signal:answer` | SDP answer ("이걸로 합의") | offer를 받은 쪽 | answer를 적용. 형식 합의 완료 |
+| `signal:ice` | ICE candidate (연결 가능한 주소 후보 하나) | 양쪽 모두, 후보를 찾을 때마다 | 후보를 추가. SDP 적용 전에 오면 모아 뒀다가 추가 |
+
+offer와 answer는 연결마다 한 번씩 오가지만, ICE는 후보가 나올 때마다 양쪽에서 여러 번 오갑니다. SDP와 ICE가 무엇인지는 해결 방법 2에서 자세히 다룹니다.
+
+에러는 별도의 `exception` 이벤트로 옵니다. `{ status: 'error', code, message, event }` 형태이고, `code`로 정원 초과(`ROOM_FULL`), 방에 들어가지 않은 채 시그널을 보냄(`NOT_IN_ROOM`), 방에 상대가 없음(`PEER_NOT_FOUND`), 요청 형식 오류(`INVALID_PAYLOAD`)를 구분합니다.
+
 ## 해결 방법 2: WebRTC 연결에 필요한 정보는 SDP와 ICE 두 가지입니다
 
 **WebRTC**는 브라우저와 앱에 들어 있는 실시간 통신 표준입니다. 카메라·마이크 캡처, 압축, 암호화, 전송까지 모두 단말 안에서 처리합니다. 그래서 WebRTC 연결은 서버가 아니라 **클라이언트가 만듭니다.** 서버 코드에는 `RTCPeerConnection`이 한 줄도 없습니다.
